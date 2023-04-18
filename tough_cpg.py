@@ -37,9 +37,9 @@ import time
 
 # Input corner-point geometry, the TOUGH* executable, and the run folder
 grdecl = 'faulted_5x5x2.GRDECL'
-grdecl = 'faulted_10x10x5.GRDECL'
-grdecl = 'faulted_15x15x7.GRDECL'
-#grdecl = 'faulted_30x30x10.GRDECL'
+# grdecl = 'faulted_10x10x5.GRDECL'
+# grdecl = 'faulted_15x15x7.GRDECL'
+# grdecl = 'faulted_30x30x10.GRDECL'
 exe = 'treactv332omp_eco2n_pc.exe'
 folder = grdecl.split('.')[0]
 
@@ -486,7 +486,7 @@ cpg_z.save(folder + '/' + folder + '_z.vtk')
 
 # Save the results for all time steps using pyTOUGH
 # The results are visualized for the Cartesian geometry because the cell coordinates are not updated from CPG
-pytough_vtk = False
+pytough_vtk = True
 if pytough_vtk:
     for t in lst.times:
         lst.set_time(t)
