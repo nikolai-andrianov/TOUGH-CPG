@@ -389,12 +389,6 @@ q = 1.5 * 1e6 * 1e3 / year
 # See see TOUGH3 UG p. 85
 # The generator name has be in the format "%3s%2d"
 
-# gener = t2generator(name='INJ 1', block=block_name[perf_id], type='COM3',
-#                     ltab=len(times), itab='h', gx=None, ex=.538E+05, hg=None, fg=None,
-#                     time=times,
-#                     rate=[q]*len(times),
-#                     enthalpy=[.538E+05]*len(times))
-
 gener = t2generator(name='INJ 1', block=block_name[perf_id], type='COM3',
                     ltab=2, itab='h', gx=None, ex=.538E+05, hg=None, fg=None,
                     time=[0, times[-2]],
