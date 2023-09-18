@@ -34,17 +34,23 @@ from matplotlib import pyplot
 from rampup_timesteps import *
 import pandas as pd
 import time
+import itertools
+import sys
+
+np.seterr(all='raise')
 
 # Input corner-point geometry, the TOUGH* executable, and the run folder
 grdecl = 'faulted_5x5x2.GRDECL'
 # grdecl = 'faulted_10x10x5.GRDECL'
 # grdecl = 'faulted_15x15x7.GRDECL'
-# grdecl = 'faulted_30x30x10.GRDECL'
+#grdecl = 'faulted_30x30x10.GRDECL'
+
 exe = 'treactv332omp_eco2n_pc.exe'
 folder = grdecl.split('.')[0]
 
 # Setting up the CPG geometry using pyTOUGH is time-consuming for large grid sizes
 pytough_grid = True
+#pytough_grid = False
 
 print('\nSetting up pyTOUGH parameters..\n')
 start_time = time.time()
@@ -209,7 +215,7 @@ dat.selection['float'][1] = 0.8
 # TIMES section
 
 # Printout at specified times
-times = rampup_timesteps(tend, dt, n=2)
+times = rampup_timesteps(tend, dt, n=20)
 # Need to add time 0 for the proper GENER setup
 times = np.concatenate(([0], times))
 output_times = list(np.cumsum(times))
@@ -235,10 +241,17 @@ cpg = pv.ExplicitStructuredGrid(dim, crn)
 cpg = cpg.compute_connectivity()
 cpg = cpg.compute_connections()
 cpg = cpg.compute_cell_sizes(length=False, area=False, volume=True)
-# cpg.flip_z(inplace=True)
+cpg.flip_z(inplace=True)
+
+#cpg.flip_normal([1, 0, 0], inplace=True)
+
+n_nodes = cpg.dimensions
+n_cells = [n - 1 for n in n_nodes]
+dims = 'x'.join([str(d) for d in n_cells])
+print( ' Read ' + dims + '=' + str(cpg.n_cells) + ' cells\n')
 
 # Hiding cells does not remove them from the grid
-# cpg.hide_cells(inactind, inplace=True)
+#cpg.hide_cells(inactind, inplace=True)
 # cpg.plot(show_edges=True)
 
 # cpg_z = cpg.scale([1, 1, 10], inplace=False)
@@ -249,11 +262,13 @@ cpg = cpg.compute_cell_sizes(length=False, area=False, volume=True)
 centers = cpg.cell_centers()
 #edge_centers = cpg.extract_all_edges().cell_centers().points
 
-# Plotting
+# # Plotting
 # pl = pv.Plotter()
-# pl.add_mesh(cpg, show_edges=True, line_width=1, opacity=0.85)
-# pl.add_mesh(centers, color="r", point_size=8.0, render_points_as_spheres=True)
+# cpg_z = cpg.scale([1, 1, 1], inplace=False)
+# pl.add_mesh(cpg_z, show_edges=True, line_width=1, opacity=0.85)
+# #pl.add_mesh(centers, color="r", point_size=8.0, render_points_as_spheres=True)
 # pl.show()
+#sys.exit(0)
 
 end_time = time.time()
 dt_cpg = end_time - start_time
@@ -265,10 +280,12 @@ print("Reading CPG: %s sec" % dt_cpg)
 print('\nCreating MULgrid from CPG\n')
 start_time = time.time()
 
-n_nodes = cpg.dimensions
-n_cells = [n - 1 for n in n_nodes]
+# n_nodes = cpg.dimensions
+# n_cells = [n - 1 for n in n_nodes]
+
+# Use convention=2 to get potentially up to 999 layers (see mulgrids.py line 565)
 dd = [[999] * n for n in n_cells]
-geo = mulgrid().rectangular(dd[0], dd[1], dd[2])
+geo = mulgrid().rectangular(dd[0], dd[1], dd[2])  # , convention=2
 
 # Set the grid data fields
 dat.grid = t2grid()
@@ -291,6 +308,14 @@ if pytough_grid:
     print('\nSetting up the grid in pyTOUGH..\n')
     start_time = time.time()
 
+    # Prepare fast-access lists
+    point_id = []
+    for c in cpg.cell:
+        point_id.append(c.point_ids)
+
+    # Print message when execution time is > check_min minutes
+    check_min = 1
+
     # First fix the block centers and volumes to match the CPG geometry
     for i, (b, c) in enumerate(zip(dat.grid.block, cpg.cell)):
         dat.grid.block[b].centre = np.mean(c.points, axis=0)
@@ -307,6 +332,7 @@ if pytough_grid:
         dat.grid.block[b].connection_name.clear()
         dat.grid.block[b].neighbour_name.clear()
 
+
         for j in cpg.neighbors(i):
 
             # The connection name
@@ -314,12 +340,15 @@ if pytough_grid:
 
             # Identify the face, connecting the neighbors by comparing the joint points for the 2 neighboring cells
             pi = c.point_ids
-            pj = cpg.cell[j].point_ids
+            #pj = cpg.cell[j].point_ids
+            pj = point_id[j]
             pc = set(pi) & set(pj)
             for f in c.faces:
+
                 if set(f.point_ids) == pc:
                     # Check if this connection has not been added before
                     conn_added = False
+
                     for conn in dat.grid.connection.keys():
                         if (conn[0] == cname[0] and conn[1] == cname[1]) or (conn[0] == cname[1] and conn[1] == cname[0]):
                             conn_added = True
@@ -340,15 +369,42 @@ if pytough_grid:
                         # All block centre's have been updated in a loop above; 0-th is the current block, 1st is the neighbor
                         d = blocks[1].centre - blocks[0].centre
                         # Cosine of the angle between the gravitational acceleration vector and the line between the two blocks
-                        dircos = np.dot(d, geo.tilt_vector) / np.linalg.norm(d)
+                        try:
+                            # Quick fix
+                            if np.linalg.norm(d) < 1e-8:
+                                dircos = 0
+                            else:
+                                dircos = np.dot(d, geo.tilt_vector) / np.linalg.norm(d)
+                        except:
+                            print('Error in dircos')
 
                         # Add connection to dat.grid.connectionlist, dat.grid.connection, and to block.connection_name
-                        dat.grid.add_connection(t2connection(blocks, direction, dist, area, dircos))
+                        # dat.grid.add_connection(t2connection(blocks, direction, dist, area, dircos))
+                        newconnection = t2connection(blocks, direction, dist, area, dircos)
+
+                        # The original dat.grid.add_connection(tc) is too slow because of the call to
+                        # self.connection[conname] = newconnection in t2grids.py line 317
+                        #dat.grid.add_connection(newconnection)
+
+                        # Contents of add_connection() from t2grids.py
+                        conname = tuple([blk.name for blk in newconnection.block])
+                        if conname in dat.grid.connection:
+                            i = dat.grid.connectionlist.index(dat.grid.connection[conname])
+                            dat.grid.connectionlist[i] = newconnection
+                        else:
+                            dat.grid.connectionlist.append(newconnection)
+                        #dat.grid.connection[conname] = newconnection
+                        for block in newconnection.block: block.connection_name.add(conname)
+
+                        end_time = time.time()
+                        dt_cpgrid = end_time - start_time
+                        if dt_cpgrid / 60 > check_min:
+                            print("   %s min.." % check_min)
+                            check_min += 1
 
     end_time = time.time()
     dt_cpgrid = end_time - start_time
     print("Setting up the grid in pyTOUGH: %s sec" % dt_cpgrid)
-
 
 # -----------------------------------------------------------------------------
 # GENER section
@@ -360,25 +416,28 @@ kperf = n_cells[2] - 1
 perf_id = cpg.cell_id((iperf, jperf, kperf))
 
 # Does not work well..
-plot_perf = False
+plot_perf = True
 if plot_perf:
     perf = np.zeros(cpg.number_of_cells)
     perf[perf_id] = 1
     cpg.cell_data['Perf_cells'] = perf
+    cpg = cpg.scale([1, 1, 10], inplace=True)
     pl = pv.Plotter()
     #pl.add_mesh(cpg.outline(), color="k")
     #cpg_z.plot(scalars='Perf_cells', show_edges=True)
     pl.add_mesh(cpg, show_edges=True, line_width=1, opacity=0.5)
     #pl.add_mesh(perf, color="r", point_size=8.0, render_points_as_spheres=True)
     pl.add_mesh(cpg, scalars='Perf_cells')
+    
+    pl.show_grid()
     pl.show()
 
     # Plot well as a vertical line, ending at the performation
-    pl = pv.Plotter()
-    well = np.array([[iperf, jperf, 0], [iperf, jperf, kperf]])
-    pl.add_lines(well, color='yellow', width=3)
-    pl.add_mesh(cpg, show_edges=True, line_width=1, opacity=0.5, render_lines_as_tubes=True)
-    pl.show()
+    #pl = pv.Plotter()
+    #well = np.array([[iperf, jperf, 0], [iperf, jperf, kperf]])
+    #pl.add_lines(well, color='yellow', width=3)
+    #pl.add_mesh(cpg, show_edges=True, line_width=1, opacity=0.5, render_lines_as_tubes=True)
+    #pl.show()
 
 
 # CO2 injection of 1.5 MTa
@@ -466,21 +525,22 @@ print("Fixing run results: %s sec" % dt_fix)
 print('\nSaving VTK results in ' + folder + ' ...')
 start_time = time.time()
 
-lst = toughreact_tecplot(folder + '/flowdata.tec', dat.grid.block)
+lst = toughreact_tecplot(folder + '/flowdata.tec', dat.grid)
 
 # Save the results for the last time step using pyvista
 lst.set_time(lst.times[-1])
+
 df = pd.DataFrame(data=lst.element._data, columns=lst.element._col.keys())
 cpg.cell_data['P(bar)'] = df['P(Pa)'] / barsa
 cpg.cell_data['XCO2Liq'] = df['XCO2Liq']
 # Exxagerate the z-coordinate for better visibility
-cpg_z = cpg.scale([1, 1, 10], inplace=False)
-# cpg_z.plot(scalars='P(Pa)', show_edges=True)
-cpg_z.save(folder + '/' + folder + '_z.vtk')
+#cpg = cpg.scale([1, 1, 5], inplace=True)
+cpg.plot(scalars='P(bar)', show_edges=True)
+cpg.save(folder + '/' + folder + '_z.vtk')
 
 # Save the results for all time steps using pyTOUGH
 # The results are visualized for the Cartesian geometry because the cell coordinates are not updated from CPG
-pytough_vtk = True
+pytough_vtk = False
 if pytough_vtk:
     for t in lst.times:
         lst.set_time(t)
